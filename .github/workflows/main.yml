@@ -38,7 +38,7 @@ jobs:
             -type f -name sdkmanager -print -quit)"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found"
+            echo "::error::Android SDK manager not found"
             exit 1
           fi
 
@@ -56,7 +56,8 @@ jobs:
 
           ZIP_FILE="$(find . -type f \
             -name 'Ultra_Stream_ElitePlex_Integration_Work.zip' \
-            -not -path './.git/*' -print -quit)"
+            -not -path './.git/*' \
+            -print -quit)"
 
           if [ -z "$ZIP_FILE" ]; then
             echo "::error::Project ZIP not found in repository"
@@ -66,8 +67,16 @@ jobs:
           mkdir -p extracted
           unzip -oq "$ZIP_FILE" -d extracted
 
-          echo "=== Extracted files ==="
-          find extracted -maxdepth 4 -type f | head -200
+          echo "ZIP extracted successfully"
+          echo "=== Gradle files ==="
+
+          find extracted -type f \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \
+            -o -name build.gradle \
+            -o -name build.gradle.kts \
+            -o -name gradlew \
+            -o -name gradle-wrapper.properties \) -print
 
       - name: Locate Android Project
         shell: bash
@@ -78,7 +87,9 @@ jobs:
 
           while IFS= read -r FILE; do
             DIR="$(dirname "$FILE")"
-            if [ -f "$DIR/gradlew" ]; then
+
+            if [ -f "$DIR/build.gradle" ] || \
+               [ -f "$DIR/build.gradle.kts" ]; then
               PROJECT_DIR="$DIR"
               break
             fi
@@ -89,43 +100,53 @@ jobs:
           )
 
           if [ -z "$PROJECT_DIR" ]; then
-            while IFS= read -r FILE; do
-              DIR="$(dirname "$FILE")"
-              if [ -f "$DIR/gradlew" ]; then
-                PROJECT_DIR="$DIR"
-                break
-              fi
-            done < <(
-              find extracted -type f \
-                \( -name build.gradle \
-                -o -name build.gradle.kts \) -print
-            )
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "=== Gradle files found ==="
-            find extracted -type f \
-              \( -name gradlew \
-              -o -name settings.gradle \
-              -o -name settings.gradle.kts \
-              -o -name build.gradle \
-              -o -name build.gradle.kts \
-              -o -name gradle-wrapper.properties \) -print
-
-            echo "::error::Gradle project with gradlew not found in ZIP"
+            echo "::error::Android Gradle project not found"
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Found project: $PROJECT_DIR"
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Gradle Wrapper
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          if [ ! -f gradlew ]; then
+            echo "Gradle wrapper missing; generating wrapper"
+
+            gradle wrapper --gradle-version 8.9
+          fi
+
+          chmod +x gradlew
+
       - name: Build Debug APK
         shell: bash
         run: |
           set -e
           cd "$PROJECT_DIR"
-          chmod +x gradlew
+
           ./gradlew --no-daemon assembleDebug
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "=== Generated APK files ==="
+
+          find "$PROJECT_DIR" -type f -name '*.apk' -print
+
+          if ! find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print -quit | grep -q .; then
+            echo "::error::Debug APK was not generated"
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -134,3 +155,4 @@ jobs:
           path: extracted/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
+          
