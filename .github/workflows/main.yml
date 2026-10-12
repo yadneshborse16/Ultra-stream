@@ -15,43 +15,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Find Android SDK Manager
-        shell: bash
-        run: |
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager -print -quit)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: Android SDK Manager not found."
-            exit 1
-          fi
-
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "Found SDK Manager: $SDKMANAGER"
-
-      - name: Accept Android SDK Licenses
-        shell: bash
-        run: |
-          yes | "$SDKMANAGER" --licenses || true
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Install Android SDK Packages
-        shell: bash
         run: |
-          "$SDKMANAGER" --install \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
@@ -59,57 +38,86 @@ jobs:
       - name: Extract Project ZIP
         shell: bash
         run: |
+          set -e
+
           ZIP_FILE="$(find . -type f \
             -name 'Ultra_Stream_ElitePlex_Integration_Work.zip' \
             -not -path './.git/*' -print -quit)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP was not found in the repository."
+            echo "::error::Project ZIP not found in repository."
             exit 1
           fi
 
           mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
-          echo "Project ZIP extracted successfully."
+          unzip -oq "$ZIP_FILE" -d extracted
 
-      - name: Locate Android Project
+          echo "ZIP extracted successfully."
+          echo "=== Project files ==="
+          find extracted -maxdepth 4 -type f | head -200
+
+      - name: Locate Gradle Project
         shell: bash
         run: |
-          PROJECT_DIR="$(find extracted -type f \
-            \( -name settings.gradle \
-            -o -name settings.gradle.kts \) \
-            -print -quit | xargs -r dirname)"
+          set -e
+
+          PROJECT_DIR=""
+
+          while IFS= read -r FILE; do
+            DIR="$(dirname "$FILE")"
+
+            if [ -f "$DIR/gradlew" ]; then
+              PROJECT_DIR="$DIR"
+              break
+            fi
+          done < <(
+            find extracted -type f \
+              \( -name settings.gradle \
+              -o -name settings.gradle.kts \) -print
+          )
 
           if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR="$(find extracted -type f \
-              \( -name build.gradle \
-              -o -name build.gradle.kts \) \
-              -print -quit | xargs -r dirname)"
+            while IFS= read -r FILE; do
+              DIR="$(dirname "$FILE")"
+
+              if [ -f "$DIR/gradlew" ]; then
+                PROJECT_DIR="$DIR"
+                break
+              fi
+            done < <(
+              find extracted -type f \
+                \( -name build.gradle \
+                -o -name build.gradle.kts \) -print
+            )
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No Gradle project was found in the ZIP."
+            echo "=== Gradle files found ==="
+            find extracted -type f \
+              \( -name gradlew \
+              -o -name settings.gradle \
+              -o -name settings.gradle.kts \
+              -o -name build.gradle \
+              -o -name build.gradle.kts \
+              -o -name gradle-wrapper.properties \) -print
+
+            echo "::error::Could not find a Gradle project with gradlew."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found project at: $PROJECT_DIR"
+          echo "Android project: $PROJECT_DIR"
 
       - name: Build Debug APK
         shell: bash
         run: |
+          set -e
           cd "$PROJECT_DIR"
 
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
-          else
-            echo "ERROR: Gradle wrapper (gradlew) not found."
-            echo "A compatible Gradle wrapper is required."
-            exit 1
-          fi
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
 
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Ultra-Stream-APK
